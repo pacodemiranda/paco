@@ -4,7 +4,7 @@ import { DEFAULT_PROGRAM, ACTIVITY_TYPES, ACTIVITY_NOTES, validateProgram } from
 import * as U from './util.js';
 import { lineChart, barChart } from './charts.js';
 
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.1.0';
 const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet-root');
 const $toast = document.getElementById('toast');
@@ -205,6 +205,7 @@ function completeTimedSet(t) {
   if (!st) return;
   st.t = t.total;
   st.done = true;
+  { const t0 = new Date().toISOString(); s.firstAt = s.firstAt || t0; s.lastAt = t0; }
   beep();
   startRest(restFor(s, e));
   saveSession(s);
@@ -246,6 +247,9 @@ function toggleSet(ei, i) {
   const st = e.sets[i];
   st.done = !st.done;
   if (st.done) {
+    const t0 = new Date().toISOString();
+    s.firstAt = s.firstAt || t0;
+    s.lastAt = t0;
     if (e.mode === 'reps' && st.r == null) { const n = parseInt(e.reps, 10); st.r = Number.isFinite(n) ? n : null; }
     if (e.mode === 'time' && st.t == null) st.t = e.seconds;
     const nx = e.sets[i + 1];
@@ -279,6 +283,15 @@ function persistSoon(s) {
   persistTimer = setTimeout(() => saveSession(s), 350);
 }
 
+function effectiveDuration(s, nowMs = Date.now()) {
+  // Ignora tempo parado: treino aberto muito antes da primeira série ou esquecido depois da última.
+  const start0 = Date.parse(s.startedAt);
+  let start = start0, end = nowMs;
+  if (s.firstAt && Date.parse(s.firstAt) - start0 > 30 * 60000) start = Date.parse(s.firstAt) - 60000;
+  if (s.lastAt && nowMs - Date.parse(s.lastAt) > 60 * 60000) end = Date.parse(s.lastAt) + 3 * 60000;
+  return Math.max(60, Math.round((end - start) / 1000));
+}
+
 function finishSession() {
   const s = activeSession();
   if (!s) return;
@@ -287,7 +300,8 @@ function finishSession() {
   const end = new Date();
   s.status = 'done';
   s.endedAt = end.toISOString();
-  s.durationSec = Math.round((end - Date.parse(s.startedAt)) / 1000);
+  const mins = U.num(document.getElementById('fin-min')?.value);
+  s.durationSec = mins != null && mins > 0 ? Math.round(mins * 60) : effectiveDuration(s, end.getTime());
   s.kcal = kcal;
   s.notes = notes;
   s.date = U.dkey(new Date(s.startedAt));
@@ -404,7 +418,8 @@ function vHoje() {
       <h2 class="h-display h1">${U.esc(w.name)}</h2>
       <p class="muted">${U.esc(w.focus || '')}</p>
       <div class="chips"><span class="chip">${w.exercises.length} exercícios</span><span class="chip">${w.minutes || 50} min</span>${w.circuit ? '<span class="chip red">Circuito</span>' : ''}</div>
-      <button class="btn primary block" data-act="start" data-w="${U.esc(w.id)}">Iniciar treino</button></div>`;
+      <button class="btn primary block" data-act="start" data-w="${U.esc(w.id)}">Iniciar treino</button>
+      <button class="btn block" data-act="preview" data-w="${U.esc(w.id)}">Ver treino</button></div>`;
   } else if (plan && plan.a) {
     todayCard = `<div class="card today-card stack">
       <span class="eyebrow">${U.DOW_LONG[now.getDay()]}, ${now.getDate()} de ${U.MONTHS[now.getMonth()]}</span>
@@ -425,8 +440,8 @@ function vHoje() {
     <div class="week">${strip}</div>
     ${todayCard}
     <div class="card row between"><div class="stat"><b class="num">${did} de ${planned}</b><span class="muted small">treinos de academia nesta semana</span></div></div>
-    ${!act && others.length ? `<section class="stack"><h3 class="eyebrow">Fazer outro treino</h3>
-      ${others.map(w => `<button class="card row between" style="text-align:left;cursor:pointer" data-act="start" data-w="${U.esc(w.id)}"><span><b>${U.esc(w.name)}</b><br><span class="muted small">${w.exercises.length} exercícios - ${w.minutes || 50} min</span></span>${IC.next}</button>`).join('')}</section>` : ''}
+    ${!act && others.length ? `<section class="stack"><h3 class="eyebrow">Ver outro treino</h3>
+      ${others.map(w => `<button class="card row between" style="text-align:left;cursor:pointer" data-act="preview" data-w="${U.esc(w.id)}"><span><b>${U.esc(w.name)}</b><br><span class="muted small">${w.exercises.length} exercícios - ${w.minutes || 50} min</span></span>${IC.next}</button>`).join('')}</section>` : ''}
     ${r.rules && r.rules.length ? `<section class="card stack"><h3 class="eyebrow">Regras da fase</h3>
       <div class="stack">${r.rules.map(x => `<div><b>${U.esc(x.t)}</b><p class="muted">${U.esc(x.d)}</p></div>`).join('')}</div>
       ${r.avoid && r.avoid.length ? `<div><b>Evitar por enquanto</b><ul class="bullets">${r.avoid.map(x => `<li>${U.esc(x)}</li>`).join('')}</ul></div>` : ''}
@@ -448,6 +463,34 @@ function setRows(e, ei, runningTimer) {
     </div>`;
   });
   return h;
+}
+
+function vPrevia() {
+  const p = program();
+  const w = p.workouts.find(x => x.id === ui.previewW);
+  if (!w) return vHoje();
+  const act = activeSession();
+  const cards = w.exercises.map(e => {
+    const lib = p.exercises[e.ex] || { name: e.ex };
+    const last = lastPerf(e.ex);
+    const lastTxt = last ? 'Último: ' + last.map(x => e.mode === 'time' ? `${x.w ? U.fmtNum(x.w) + ' kg × ' : ''}${x.t} s` : `${x.w ? U.fmtNum(x.w) + ' kg × ' : ''}${x.r}`).join(' · ') : 'Primeira vez neste exercício';
+    return `<article class="card ex">
+      <div class="ex-top"><h3>${U.esc(lib.name)}</h3><span class="rx">${U.esc(describeEx(e))}</span></div>
+      ${e.tag ? `<p class="tag">${U.esc(e.tag)}</p>` : ''}
+      <p class="last">${U.esc(lastTxt)}</p>
+      <div class="ex-foot"><button class="btn small" data-act="video" data-x="${U.esc(e.ex)}">${IC.video} Ver execução</button></div>
+    </article>`;
+  }).join('');
+  return `<div class="shell stack">
+    <div class="wk-head"><button class="back" data-act="back" aria-label="Voltar para Hoje">${IC.back}</button>
+      <div class="ttl"><span class="eyebrow">Só visualização</span><h1 class="h-display">${U.esc(w.name)}</h1></div></div>
+    <div class="chips"><span class="chip">${w.exercises.length} exercícios</span><span class="chip">${w.minutes || 50} min</span>${w.circuit ? '<span class="chip red">Circuito</span>' : ''}</div>
+    ${w.focus ? `<p class="muted">${U.esc(w.focus)}</p>` : ''}
+    ${w.intro ? `<p class="note">${U.esc(w.intro)}</p>` : ''}
+    ${w.warmup ? `<div class="card stack"><b>Aquecimento</b><p class="muted">${U.esc(w.warmup)}</p></div>` : ''}
+    ${cards}
+    ${act ? '<button class="btn block" data-act="resume">Continuar treino em andamento</button>' : `<button class="btn primary block" data-act="start" data-w="${U.esc(w.id)}">Iniciar treino</button>`}
+  </div>`;
 }
 
 function vTreino() {
@@ -483,7 +526,7 @@ function vTreino() {
 }
 
 function monthCells(first) {
-  const startPad = (first.getDay() + 6) % 7;
+  const startPad = first.getDay();
   const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
   return { startPad, days };
 }
@@ -496,7 +539,7 @@ function vHistorico() {
   const todayK = U.dkey();
   const hasS = new Set(sess.map(s => s.date));
   const hasA = new Set(acts.map(a => a.date));
-  let cells = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map(d => `<div class="h">${d}</div>`).join('');
+  let cells = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map(d => `<div class="h">${d}</div>`).join('');
   for (let i = 0; i < startPad; i++) cells += '<div class="cd empty"></div>';
   for (let d = 1; d <= days; d++) {
     const k = U.dkey(new Date(cm.getFullYear(), cm.getMonth(), d));
@@ -695,12 +738,13 @@ function sheetHTML() {
     const s = activeSession();
     if (!s) return '';
     const st = sessionStats(s);
-    const dur = (Date.now() - Date.parse(s.startedAt)) / 1000;
+    const dur = effectiveDuration(s);
     const conf = ui.confirm === 'discard';
     return `<div class="sheet-head"><h3>Finalizar treino</h3><button class="x" data-act="close" aria-label="Fechar">${IC.close}</button></div>
       <div class="stats" style="margin-bottom:14px"><div class="stat"><b>${U.minutes(dur)}</b><span class="muted small">duração</span></div><div class="stat"><b>${st.done}/${st.total}</b><span class="muted small">séries</span></div><div class="stat"><b>${Math.round(st.volume).toLocaleString('pt-BR')}</b><span class="muted small">kg de volume</span></div></div>
       <div class="stack">
         ${st.done === 0 ? '<p class="note">Nenhuma série foi marcada. Você pode voltar e marcar, ou descartar este treino.</p>' : ''}
+        <label class="field"><span>Duração (min)</span><input class="in" id="fin-min" inputmode="numeric" value="${Math.max(1, Math.round(dur / 60))}"></label>
         <label class="field"><span>Calorias do relógio (opcional)</span><input class="in" id="fin-kcal" inputmode="numeric" placeholder="kcal"></label>
         <label class="field"><span>Nota (opcional)</span><input class="in" id="fin-notes" placeholder="Como foi o treino?"></label>
         <button class="btn primary block" data-act="finish-save" ${st.done === 0 ? 'disabled' : ''}>Salvar treino</button>
@@ -812,7 +856,7 @@ function render() {
   }
   if (!program()) { $app.innerHTML = vWait(); renderSheet(true); return; }
   if (ui.view === 'treino' && !activeSession()) ui.view = 'hoje';
-  const views = { hoje: vHoje, historico: vHistorico, evolucao: vEvolucao, mais: vMais, treino: vTreino };
+  const views = { hoje: vHoje, historico: vHistorico, evolucao: vEvolucao, mais: vMais, treino: vTreino, previa: vPrevia };
   const body = (views[ui.view] || vHoje)();
   $app.innerHTML = body + (ui.view === 'treino' ? '' : tabbar());
   paintRest();
@@ -850,6 +894,7 @@ document.addEventListener('click', async ev => {
     case 'close': closeSheet(); break;
     case 'start': startSession(d.w); break;
     case 'resume': go('treino'); break;
+    case 'preview': ui.previewW = d.w; ui.view = 'previa'; render(); window.scrollTo(0, 0); break;
     case 'back': go('hoje'); break;
     case 'warm': ui.warmOpen = !ui.warmOpen; render(); break;
     case 'set': toggleSet(+d.ex, +d.i); break;
