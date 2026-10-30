@@ -99,7 +99,7 @@ textarea.in { padding: 10px 12px; min-height: 110px; font-family: var(--mono); f
 
 /* barra de abas */
 /* barra flutuante, acima do selo do Netlify */
-.tabbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: var(--badge-gap); z-index: 20; width: min(calc(100% - 32px), 420px); background: var(--bar-bg); -webkit-backdrop-filter: saturate(1.4) blur(18px); backdrop-filter: saturate(1.4) blur(18px); border: 1px solid var(--line); border-radius: 30px; box-shadow: var(--bar-shadow); display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px; }
+.tabbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: var(--badge-gap); z-index: 20; width: min(calc(100% - 32px), 420px); background: var(--bar-bg); -webkit-backdrop-filter: saturate(1.4) blur(18px); backdrop-filter: saturate(1.4) blur(18px); border: 1px solid var(--line); border-radius: 30px; box-shadow: var(--bar-shadow); display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 6px; }
 .tab { display: grid; justify-items: center; align-content: center; gap: 2px; padding: 6px 0 5px; border: 0; border-radius: 24px; background: transparent; color: var(--muted); font-size: 11.5px; font-weight: 600; cursor: pointer; min-height: 56px; }
 .tab[aria-current="page"] { color: var(--accent-text); background: var(--accent-soft); }
 
@@ -217,3 +217,17 @@ details summary { cursor: pointer; font-weight: 600; min-height: 44px; display: 
 textarea.ro { min-height: 160px; }
 
 @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } #rest-fill, #toast { transition: none; } }
+
+/* alimentação */
+.bigsaldo { font-family: var(--display); font-size: 44px; font-weight: 700; line-height: 1.05; }
+.bigsaldo small { font-size: 18px; color: var(--muted); font-weight: 600; }
+.food-it { gap: 8px; min-height: 40px; }
+.food-it > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.wkrow { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--ink); font: inherit; font-size: 14px; cursor: pointer; }
+.wkrow > span:not(:first-child) { text-align: right; }
+.wkrow.head { color: var(--muted); font-size: 12px; font-weight: 600; cursor: default; padding-top: 0; padding-bottom: 0; }
+.wkrow.sel { border-color: var(--ink); }
+.favlist { display: grid; gap: 6px; }
+.favrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 48px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); font: inherit; font-size: 15px; text-align: left; cursor: pointer; }
+.favrow:active { transform: translateY(1px); }
+.favrow .cnt { color: var(--accent-text); }

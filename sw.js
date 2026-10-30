@@ -1,9 +1,9 @@
 // Service worker do PACO: guarda o app no aparelho para abrir sem internet.
-const VERSION = 'paco-1.1.0';
+const VERSION = 'paco-1.2.0';
 const FONTS = 'paco-fonts';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'config.js', 'manifest.webmanifest',
-  'js/app.js', 'js/store.js', 'js/supa.js', 'js/program.js', 'js/util.js', 'js/charts.js',
+  'js/app.js', 'js/store.js', 'js/supa.js', 'js/program.js', 'js/util.js','js/foods.js', 'js/charts.js',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'
 ];
 

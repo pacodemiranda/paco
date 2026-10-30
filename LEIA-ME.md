@@ -89,7 +89,7 @@ Os vídeos de cada exercício foram escolhidos por busca automática no YouTube 
 
 ## O que ainda não existe (próximas fases)
 
-Peso e medidas, fotos de evolução, alimentação e saldo de calorias, e importação automática dos treinos do Apple Watch por Atalhos.
+Peso e medidas e fotos de evolução (em espera) e importação automática dos treinos do Apple Watch por Atalhos. A aba Comida (calorias por refeição, favoritos e saldo estimado) já existe.
 
 ## Estrutura dos arquivos
 

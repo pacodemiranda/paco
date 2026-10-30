@@ -3,8 +3,9 @@ import * as supa from './supa.js';
 import { DEFAULT_PROGRAM, ACTIVITY_TYPES, ACTIVITY_NOTES, validateProgram } from './program.js';
 import * as U from './util.js';
 import { lineChart, barChart } from './charts.js';
+import { MEALS, DEFAULT_FAVS, ACTIVITY_LEVELS, KCAL_PER_MIN, bmr } from './foods.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet-root');
 const $toast = document.getElementById('toast');
@@ -23,7 +24,9 @@ const ui = {
   warmOpen: false,
   confirm: null,
   loginErr: '',
-  busy: false
+  busy: false,
+  foodDay: U.dkey(),
+  favMgr: false
 };
 const rt = { restEnd: 0, restTotal: 0, restDone: false, setTimer: null, wake: null, audio: null, sheetKey: '' };
 
@@ -33,6 +36,7 @@ const IC = {
   hoje: svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/>'),
   historico: svg('<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'),
   evolucao: svg('<path d="M3 17l5-6 4 3 8-9"/><path d="M15 5h5v5"/>'),
+  comida: svg('<path d="M7 3v7M4.5 3v5a2.5 2.5 0 0 0 5 0V3M7 10v11"/><path d="M17 3c-2.2 1.8-3 4.5-3 8h3v10"/>'),
   mais: svg('<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>'),
   check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 24),
   play: svg('<path d="M8 5l11 7-11 7z" fill="currentColor"/>', 20),
@@ -50,6 +54,44 @@ const allSessions = () => store.all('session').map(r => r.data);
 const doneSessions = () => allSessions().filter(s => s.status === 'done').sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1));
 const activeSession = () => allSessions().find(s => s.status === 'active');
 const activities = () => store.all('activity').map(r => r.data);
+
+const foods = () => store.all('food').map(r => r.data);
+const favs = () => store.all('fav').map(r => r.data);
+const bodyData = () => { const s = settings(); return { kg: s.kg || 93, cm: s.cm || 177, age: s.age || 36, sex: s.sex || 'm', factor: s.factor || 1.2 }; };
+const fmtK = n => Math.round(n).toLocaleString('pt-BR');
+const fmtSaldo = n => (n < 0 ? '-' : '+') + fmtK(Math.abs(n));
+
+function dayFood(k) {
+  const items = foods().filter(x => x.date === k);
+  return { items, total: items.reduce((a, x) => a + x.kcal * (x.qty || 1), 0) };
+}
+
+function dayExpense(k) {
+  const b = bodyData();
+  const basal = Math.round(bmr(b) * b.factor);
+  let train = 0, est = false;
+  doneSessions().filter(x => x.date === k).forEach(x => {
+    if (x.kcal) train += x.kcal; else { train += ((x.durationSec || 0) / 60) * KCAL_PER_MIN; est = true; }
+  });
+  activities().filter(x => x.date === k).forEach(x => {
+    if (x.kcal) train += x.kcal; else if (x.minutes) { train += x.minutes * KCAL_PER_MIN; est = true; }
+  });
+  train = Math.round(train);
+  return { basal, train, total: basal + train, est };
+}
+
+function dayBalance(k) {
+  const fd = dayFood(k), ex = dayExpense(k);
+  return { k, logged: fd.items.length > 0, cons: fd.total, exp: ex.total, basal: ex.basal, train: ex.train, est: ex.est, saldo: fd.total - ex.total };
+}
+
+function ensureFavs() {
+  if (store.getMeta('favSeeded')) return;
+  if (supa.configured() && !store.getMeta('synced1')) return;
+  DEFAULT_FAVS.forEach(x => { if (!store.get(x.id)) store.save('fav', x.id, { ...x }); });
+  store.setMeta('favSeeded', true);
+  supa.scheduleSync(1500);
+}
 
 function saveProgram(p) { store.save('program', 'program', p); supa.scheduleSync(1500); }
 function saveSession(s) { store.save('session', s.id, s); supa.scheduleSync(4000); }
@@ -369,7 +411,7 @@ function topbar(extra = '') {
 }
 
 function tabbar() {
-  const tabs = [['hoje', 'Hoje'], ['historico', 'Histórico'], ['evolucao', 'Evolução'], ['mais', 'Mais']];
+  const tabs = [['hoje', 'Hoje'], ['comida', 'Comida'], ['historico', 'Histórico'], ['evolucao', 'Evolução'], ['mais', 'Mais']];
   return `<nav class="tabbar" aria-label="Seções">${tabs.map(([k, l]) =>
     `<button class="tab" data-act="tab" data-v="${k}" ${ui.view === k ? 'aria-current="page"' : ''}>${IC[k]}<span>${l}</span></button>`).join('')}</nav>`;
 }
@@ -490,6 +532,53 @@ function vPrevia() {
     ${w.warmup ? `<div class="card stack"><b>Aquecimento</b><p class="muted">${U.esc(w.warmup)}</p></div>` : ''}
     ${cards}
     ${act ? '<button class="btn block" data-act="resume">Continuar treino em andamento</button>' : `<button class="btn primary block" data-act="start" data-w="${U.esc(w.id)}">Iniciar treino</button>`}
+  </div>`;
+}
+
+function dayLabel(k) {
+  const d = U.fromKey(k);
+  if (k === U.dkey()) return 'Hoje';
+  if (k === U.dkey(U.addDays(new Date(), -1))) return 'Ontem';
+  return `${U.DOW_LONG[d.getDay()]}, ${d.getDate()} de ${U.MONTHS[d.getMonth()]}`;
+}
+
+function vComida() {
+  const k = ui.foodDay;
+  const bal = dayBalance(k);
+  const b = bodyData();
+  const week = Array.from({ length: 7 }, (_, i) => dayBalance(U.dkey(U.addDays(new Date(), i - 6))));
+  const logged = week.filter(x => x.logged);
+  const avg = logged.length ? logged.reduce((a, x) => a + x.saldo, 0) / logged.length : null;
+  const conf = id => ui.confirm === 'del:' + id;
+  const meals = MEALS.map(([mk, ml]) => {
+    const items = store.all('food').filter(r => r.data.date === k && r.data.meal === mk);
+    const sum = items.reduce((a, r) => a + r.data.kcal * (r.data.qty || 1), 0);
+    return `<section class="card stack"><div class="row between"><h3 class="eyebrow">${ml}</h3><span class="num muted small">${items.length ? fmtK(sum) + ' kcal' : ''}</span></div>
+      ${items.map(r => `<div class="row between food-it"><span>${U.esc(r.data.name)}${(r.data.qty || 1) > 1 ? ` <span class="muted">x${r.data.qty}</span>` : ''}</span>
+        <span class="row" style="gap:2px"><span class="num muted">${fmtK(r.data.kcal * (r.data.qty || 1))}</span><button class="btn quiet small ${conf(r.id) ? 'danger' : ''}" data-act="del" data-id="${r.id}" aria-label="Excluir ${U.esc(r.data.name)}">${conf(r.id) ? 'Excluir?' : IC.close}</button></span></div>`).join('')}
+      <button class="btn small" data-act="food-add" data-meal="${mk}">+ Adicionar</button></section>`;
+  }).join('');
+  const rows = week.map(x => {
+    const d = U.fromKey(x.k);
+    return `<button class="wkrow ${x.k === k ? 'sel' : ''}" data-act="food-goto" data-k="${x.k}"><span>${U.DOW[d.getDay()]} ${d.getDate()}</span><span class="num">${x.logged ? fmtK(x.cons) : '-'}</span><span class="num">${x.logged ? fmtSaldo(x.saldo) : '-'}</span></button>`;
+  }).join('');
+  return `<div class="shell stack-lg">${topbar()}
+    <div class="row between"><h1 class="h-display h2">${U.esc(dayLabel(k))}</h1>
+      <span class="row" style="gap:4px"><button class="x" data-act="food-day" data-d="-1" aria-label="Dia anterior">${IC.prev}</button><button class="x" data-act="food-day" data-d="1" aria-label="Próximo dia">${IC.next}</button></span></div>
+    <section class="card stack">
+      ${bal.logged
+        ? `<div><span class="eyebrow">Saldo estimado</span><div class="bigsaldo num">${fmtSaldo(bal.saldo)} <small>kcal</small></div><p class="muted small">${bal.saldo < 0 ? 'Déficit' : 'Superávit'}: você comeu ${bal.saldo < 0 ? 'menos' : 'mais'} do que gastou.</p></div>`
+        : `<div><span class="eyebrow">Saldo estimado</span><p class="muted">Nada registrado neste dia. Adicione as refeições abaixo.</p></div>`}
+      <div class="stats" style="grid-template-columns:repeat(2,1fr)">
+        <div class="stat"><b class="num">${fmtK(bal.cons)}</b><span class="muted small">consumo (kcal)</span></div>
+        <div class="stat"><b class="num">${fmtK(bal.exp)}</b><span class="muted small">gasto estimado (kcal)</span></div></div>
+      <p class="muted small">Gasto = basal ${fmtK(bal.basal)} (peso ${U.fmtNum(b.kg)} kg) + treinos ${fmtK(bal.train)}${bal.est ? ' (parte estimada pela duração)' : ''}. É uma estimativa, serve para ver tendência.</p>
+    </section>
+    <section class="card stack"><h3 class="eyebrow">Últimos 7 dias</h3>
+      <div class="wkrow head"><span></span><span>consumo</span><span>saldo</span></div>${rows}
+      <p class="muted small">${avg === null ? 'Sem registros nos últimos 7 dias.' : `Saldo médio nos ${logged.length} dia${logged.length > 1 ? 's' : ''} com registro: <b style="color:var(--ink)">${fmtSaldo(avg)} kcal/dia</b>.`}</p>
+    </section>
+    ${meals}
   </div>`;
 }
 
@@ -698,6 +787,13 @@ function vMais() {
       ${ui.importMsg ? `<p class="${ui.importOk ? 'note' : 'err'}" role="status" style="white-space:pre-line">${U.esc(ui.importMsg)}</p>` : ''}
     </section>
 
+    <section class="card stack"><h2 class="h-display h3">Meus dados</h2>
+      <p class="muted small">Usados para estimar o gasto diário em Comida (fórmula Mifflin-St Jeor). Atualize o peso de vez em quando. Informe as calorias ativas do relógio ao finalizar os treinos.</p>
+      <div class="row"><label class="field grow"><span>Peso (kg)</span><input class="in" inputmode="decimal" data-chg="body" data-k="kg" value="${U.esc(U.fmtNum(bodyData().kg))}"></label><label class="field grow"><span>Altura (cm)</span><input class="in" inputmode="numeric" data-chg="body" data-k="cm" value="${bodyData().cm}"></label><label class="field grow"><span>Idade</span><input class="in" inputmode="numeric" data-chg="body" data-k="age" value="${bodyData().age}"></label></div>
+      <label class="field"><span>Sexo</span><select class="in" data-chg="body" data-k="sex"><option value="m" ${bodyData().sex === 'm' ? 'selected' : ''}>Masculino</option><option value="f" ${bodyData().sex === 'f' ? 'selected' : ''}>Feminino</option></select></label>
+      <label class="field"><span>Nível de atividade fora dos treinos</span><select class="in" data-chg="body" data-k="factor">${ACTIVITY_LEVELS.map(([v, l]) => `<option value="${v}" ${bodyData().factor === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </section>
+
     <section class="card stack"><h2 class="h-display h3">Preferências</h2>
       <label class="field"><span>Descanso padrão entre séries (segundos)</span><input class="in" id="set-rest" inputmode="numeric" value="${sset.rest}" data-chg="rest"></label>
       <label class="field"><span>Aviso sonoro ao fim do descanso</span><select class="in" data-chg="sound"><option value="1" ${sset.sound ? 'selected' : ''}>Ligado</option><option value="0" ${!sset.sound ? 'selected' : ''}>Desligado</option></select></label>
@@ -751,6 +847,29 @@ function sheetHTML() {
         <button class="btn quiet block ${conf ? 'danger' : ''}" data-act="discard">${conf ? 'Toque de novo para descartar' : 'Descartar treino'}</button>
       </div>`;
   }
+  if (sh.type === 'food') {
+    const mealName = (MEALS.find(m => m[0] === sh.meal) || [, ''])[1];
+    const all = favs().slice().sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    const here = foods().filter(x => x.date === sh.date && x.meal === sh.meal);
+    const row = fv => {
+      const n = here.filter(x => x.favId === fv.id).reduce((a, x) => a + (x.qty || 1), 0);
+      return `<button class="favrow" data-act="food-fav" data-id="${U.esc(fv.id)}"><span>${U.esc(fv.name)}${n ? ` <b class="cnt">x${n}</b>` : ''}</span><span class="num muted">${fmtK(fv.kcal)} kcal</span></button>`;
+    };
+    const mine = all.filter(x => x.meal === sh.meal), other = all.filter(x => x.meal !== sh.meal);
+    return `<div class="sheet-head"><h3>${U.esc(mealName)}</h3><button class="x" data-act="close" aria-label="Fechar">${IC.close}</button></div>
+      <div class="stack">
+        <p class="muted small">Toque num favorito para adicionar (toque de novo para somar outra porção). As calorias são estimativas médias, ajuste em "Gerenciar favoritos".</p>
+        ${mine.length ? `<div class="favlist">${mine.map(row).join('')}</div>` : ''}
+        ${other.length ? `<h4 class="eyebrow">Outros favoritos</h4><div class="favlist">${other.map(row).join('')}</div>` : ''}
+        <h4 class="eyebrow">Outro alimento</h4>
+        <label class="field"><span>Nome</span><input class="in" id="fd-name" placeholder="Ex.: sanduíche natural"></label>
+        <div class="row"><label class="field grow"><span>Calorias (kcal)</span><input class="in" id="fd-kcal" inputmode="numeric" placeholder="kcal"></label><label class="field grow"><span>Porções</span><input class="in" id="fd-qty" inputmode="decimal" value="1"></label></div>
+        <label class="row" style="gap:8px"><input type="checkbox" id="fd-fav" checked> <span class="small">Salvar como favorito</span></label>
+        <button class="btn primary block" data-act="food-custom">Adicionar</button>
+        <button class="btn quiet block" data-act="fav-mgr">${ui.favMgr ? 'Fechar favoritos' : 'Gerenciar favoritos'}</button>
+        ${ui.favMgr ? `<div class="stack">${all.map(fv => `<div class="row between"><span class="grow small">${U.esc(fv.name)}</span><input class="in" style="width:84px" inputmode="numeric" data-chg="favkcal" data-id="${U.esc(fv.id)}" value="${fv.kcal}" aria-label="kcal de ${U.esc(fv.name)}"><button class="btn quiet small ${ui.confirm === 'fav:' + fv.id ? 'danger' : ''}" data-act="fav-del" data-id="${U.esc(fv.id)}" aria-label="Remover ${U.esc(fv.name)}">${ui.confirm === 'fav:' + fv.id ? 'Remover?' : IC.close}</button></div>`).join('')}</div>` : ''}
+      </div>`;
+  }
   if (sh.type === 'activity') {
     const types = ACTIVITY_TYPES.slice();
     const sel = sh.pre && types.includes(sh.pre) ? sh.pre : (sh.pre ? 'Outro' : 'Pilates');
@@ -771,8 +890,12 @@ function renderSheet(force) {
   if (!force && key === rt.sheetKey) return;
   rt.sheetKey = key;
   if (!ui.sheet) { $sheet.innerHTML = ''; return; }
+  const prev = $sheet.querySelector('.sheet');
+  const top = prev ? prev.scrollTop : 0;
   const html = sheetHTML();
   $sheet.innerHTML = html ? `<div class="backdrop" data-act="backdrop"><div class="sheet" role="dialog" aria-modal="true"><div class="grip"></div>${html}</div></div>` : '';
+  const cur = $sheet.querySelector('.sheet');
+  if (cur && top) cur.scrollTop = top;
 }
 
 function openSheet(sh) { ui.sheet = sh; ui.confirm = null; renderSheet(true); }
@@ -840,8 +963,23 @@ function buildReport(days) {
   if (!acts.length) L.push('Nenhuma.');
   acts.forEach(a => L.push(`- ${U.brDate(a.date)} ${a.type}${a.minutes ? `, ${a.minutes} min` : ''}${a.kcal ? `, ${U.fmtNum(a.kcal)} kcal` : ''}${a.notes ? ` - ${a.notes}` : ''}`));
   L.push('');
+  const fdays = Array.from({ length: days }, (_, i) => dayBalance(U.dkey(U.addDays(start, i)))).filter(x => x.logged);
+  L.push('## Alimentação (estimativa)');
+  if (!fdays.length) L.push('Nenhuma refeição registrada no período.');
+  else {
+    const m = a => a.reduce((x, y) => x + y, 0) / a.length;
+    const wk = fdays.filter(x => ![0, 6].includes(U.fromKey(x.k).getDay())), we = fdays.filter(x => [0, 6].includes(U.fromKey(x.k).getDay()));
+    L.push(`- Dias com registro: ${fdays.length} de ${days}`);
+    L.push(`- Consumo médio: ${fmtK(m(fdays.map(x => x.cons)))} kcal/dia | gasto estimado médio: ${fmtK(m(fdays.map(x => x.exp)))} kcal/dia | saldo médio: ${fmtSaldo(m(fdays.map(x => x.saldo)))} kcal/dia`);
+    if (wk.length) L.push(`- Dias de semana (seg a sex): saldo médio ${fmtSaldo(m(wk.map(x => x.saldo)))} kcal (${wk.length} dias)`);
+    if (we.length) L.push(`- Fins de semana (sáb e dom): saldo médio ${fmtSaldo(m(we.map(x => x.saldo)))} kcal (${we.length} dias)`);
+    fdays.forEach(x => L.push(`- ${U.brDate(x.k)}: consumo ${fmtK(x.cons)}, gasto ${fmtK(x.exp)}, saldo ${fmtSaldo(x.saldo)}`));
+  }
+  const bd = bodyData();
+  L.push('');
   L.push('## Observações');
-  L.push('- Peso corporal e alimentação ainda não são registrados nesta versão do app.');
+  L.push(`- Peso informado no app: ${U.fmtNum(bd.kg)} kg (atualizado manualmente), altura ${bd.cm} cm, ${bd.age} anos. O histórico de peso ainda não é registrado.`);
+  L.push('- Calorias da alimentação e gasto são estimativas (kcal médias por item; gasto = basal Mifflin-St Jeor x fator de atividade + treinos). Serve para tendência, não para conta exata.');
   return L.join('\n');
 }
 
@@ -856,7 +994,7 @@ function render() {
   }
   if (!program()) { $app.innerHTML = vWait(); renderSheet(true); return; }
   if (ui.view === 'treino' && !activeSession()) ui.view = 'hoje';
-  const views = { hoje: vHoje, historico: vHistorico, evolucao: vEvolucao, mais: vMais, treino: vTreino, previa: vPrevia };
+  const views = { hoje: vHoje, historico: vHistorico, evolucao: vEvolucao, mais: vMais, treino: vTreino, previa: vPrevia, comida: vComida };
   const body = (views[ui.view] || vHoje)();
   $app.innerHTML = body + (ui.view === 'treino' ? '' : tabbar());
   paintRest();
@@ -877,6 +1015,7 @@ function paintSync() {
   if (supa.configured() && st.s === 'idle' && !store.getMeta('synced1')) {
     store.setMeta('synced1', true);
     ensureProgram();
+    ensureFavs();
     applyTheme();
     render();
   }
@@ -926,6 +1065,37 @@ document.addEventListener('click', async ev => {
     case 'finish-save': finishSession(); break;
     case 'discard':
       if (ui.confirm === 'discard') discardSession(); else { ui.confirm = 'discard'; renderSheet(true); }
+      break;
+    case 'food-day': ui.foodDay = U.dkey(U.addDays(U.fromKey(ui.foodDay), +d.d)); ui.confirm = null; render(); break;
+    case 'food-goto': ui.foodDay = d.k; render(); window.scrollTo(0, 0); break;
+    case 'food-add': openSheet({ type: 'food', meal: d.meal, date: ui.foodDay }); break;
+    case 'food-fav': {
+      const sh = ui.sheet; const fv = store.get(d.id) && store.get(d.id).data;
+      if (!sh || !fv) break;
+      const ex = store.all('food').find(r => r.data.favId === fv.id && r.data.date === sh.date && r.data.meal === sh.meal);
+      if (ex) store.save('food', ex.id, { ...ex.data, qty: (ex.data.qty || 1) + 1 });
+      else { const id = U.uid(); store.save('food', id, { id, date: sh.date, meal: sh.meal, name: fv.name, kcal: fv.kcal, qty: 1, favId: fv.id }); }
+      supa.scheduleSync(2500); renderSheet(true); render(); break;
+    }
+    case 'food-custom': {
+      const sh = ui.sheet; if (!sh) break;
+      const name = document.getElementById('fd-name').value.trim();
+      const kcal = U.num(document.getElementById('fd-kcal').value);
+      const qty = U.num(document.getElementById('fd-qty').value) || 1;
+      if (!name || !kcal || kcal <= 0) { toast('Informe o nome e as calorias'); break; }
+      let favId = null;
+      if (document.getElementById('fd-fav').checked) {
+        favId = 'fav-' + U.uid().slice(0, 8);
+        store.save('fav', favId, { id: favId, meal: sh.meal, name, kcal: Math.round(kcal) });
+      }
+      const id = U.uid();
+      store.save('food', id, { id, date: sh.date, meal: sh.meal, name, kcal: Math.round(kcal), qty, favId });
+      supa.scheduleSync(2500); closeSheet(); render(); toast('Adicionado'); break;
+    }
+    case 'fav-mgr': ui.favMgr = !ui.favMgr; renderSheet(true); break;
+    case 'fav-del':
+      if (ui.confirm === 'fav:' + d.id) { store.remove(d.id); supa.scheduleSync(1500); ui.confirm = null; renderSheet(true); }
+      else { ui.confirm = 'fav:' + d.id; renderSheet(true); }
       break;
     case 'goday': {
       ui.selDay = d.k;
@@ -1005,6 +1175,13 @@ document.addEventListener('change', async ev => {
     else { const name = v.slice(2); const prev = p.schedule[d]; p.schedule[d] = { a: name, note: (prev && prev.a === name && prev.note) || ACTIVITY_NOTES[name] || '' }; }
     saveProgram(p); toast('Agenda atualizada');
   } else if (c === 'rest') { const n = Math.max(10, Math.min(600, parseInt(t.value, 10) || 60)); saveSettings({ rest: n }); t.value = n; }
+  else if (c === 'favkcal') { const r = store.get(t.dataset.id); const n = U.num(t.value); if (r && n > 0) { store.save('fav', r.id, { ...r.data, kcal: Math.round(n) }); supa.scheduleSync(1500); } }
+  else if (c === 'body') {
+    const k = t.dataset.k; let v = k === 'sex' ? t.value : U.num(t.value);
+    if (k !== 'sex' && !(v > 0)) { render(); return; }
+    if (k === 'factor') v = parseFloat(t.value);
+    saveSettings({ [k]: v }); toast('Dados atualizados');
+  }
   else if (c === 'sound') saveSettings({ sound: t.value === '1' });
   else if (c === 'theme') { saveSettings({ theme: t.value }); applyTheme(); }
   else if (c === 'restore') {
@@ -1049,10 +1226,11 @@ async function main() {
   await store.init();
   applyTheme();
   const h = location.hash.slice(1);
-  if (['hoje', 'historico', 'evolucao', 'mais'].includes(h)) ui.view = h;
+  if (['hoje', 'comida', 'historico', 'evolucao', 'mais'].includes(h)) ui.view = h;
   supa.onStatus(paintSync);
   store.on(() => { if (!isTyping() && !ui.sheet && ui.view !== 'treino') render(); });
-  if (!supa.configured()) ensureProgram();
+  if (!supa.configured()) { ensureProgram(); ensureFavs(); }
+  else if (store.getMeta('synced1')) ensureFavs();
   render();
   setInterval(tick, 250);
   document.addEventListener('visibilitychange', () => {
